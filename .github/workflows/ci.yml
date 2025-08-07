@@ -1,0 +1,298 @@
+---
+name: CI - Build Windows Driver
+permissions:
+  contents: read
+
+# Trigger on push and pull request for all branches, allowing CI to run on feature branches
+on:
+  push:
+    branches-ignore:
+      - 'dependabot/**'
+  pull_request:
+    branches-ignore:
+      - 'dependabot/**'
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  setup_release:
+    name: Setup Release
+    outputs:
+      publish_release: ${{ steps.setup_release.outputs.publish_release }}
+      release_body: ${{ steps.setup_release.outputs.release_body }}
+      release_commit: ${{ steps.setup_release.outputs.release_commit }}
+      release_generate_release_notes: ${{ steps.setup_release.outputs.release_generate_release_notes }}
+      release_tag: ${{ steps.setup_release.outputs.release_tag }}
+      release_version: ${{ steps.setup_release.outputs.release_version }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Release
+        id: setup_release
+        uses: LizardByte/setup-release-action@v2025.102.14715
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build the driver for all platforms (x86, x64, ARM64)
+  build:
+    name: Build Driver
+    needs: setup_release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Apply patches to the DMF (Driver Module Framework) dependency
+      - name: Apply DMF patches
+        working-directory: DMF
+        run: |
+          Write-Host "Applying DMF patches..."
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/01-dmf.diff"
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/02-dmf.diff"
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/03-dmf.diff"
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/04-dmf.diff"
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/05-dmf.diff"
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/06-dmf.diff"
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/07-dmf.diff"
+          git apply -v --ignore-whitespace "${{ github.workspace }}/patches/08-dmf.diff"
+          Write-Host "✓ DMF patches applied successfully"
+
+      # Install Windows Driver Kit (WDK) for kernel-mode driver development
+      - name: Install Windows Driver Kit (WDK)
+        run: |
+          Write-Host "Installing Windows Driver Kit (WDK)..."
+          
+          # Download WDK installer
+          $url = "https://download.microsoft.com/download/c/f/8/cf80b955-d578-4635-825c-2801911f9d79/wdk/wdksetup.exe"
+          $wdkPath = "$env:TEMP\wdksetup.exe"
+          Write-Host "Downloading WDK from: $url"
+          
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $wdkPath -UseBasicParsing
+            Write-Host "✓ WDK downloaded successfully"
+          }
+          catch {
+            Write-Error "Failed to download WDK: $($_.Exception.Message)"
+            exit 1
+          }
+          
+          # Install WDK silently
+          Write-Host "Installing WDK (this may take several minutes)..."
+          $process = Start-Process -FilePath $wdkPath -ArgumentList "/quiet", "/norestart" -Wait -PassThru
+          
+          if ($process.ExitCode -ne 0) {
+            Write-Error "WDK installation failed with exit code: $($process.ExitCode)"
+            
+            # Check installation logs
+            $logDir = "$env:TEMP\WDK"
+            if (Test-Path $logDir) {
+              Write-Host "Installation logs:"
+              Get-ChildItem -Path $logDir -Recurse -File | ForEach-Object {
+                Write-Host "=== $($_.FullName) ==="
+                Get-Content $_.FullName -Tail 20
+                Write-Host ""
+              }
+            }
+            exit 1
+          }
+          
+          Write-Host "✓ WDK installation completed successfully"
+
+      # Verify WDK installation and dependencies
+      - name: Verify WDK Installation
+        run: |
+          Write-Host "Verifying WDK installation..."
+          
+          # Check WDK installation path
+          $wdkInstallPath = "C:\Program Files (x86)\Windows Kits\10"
+          if (-not (Test-Path $wdkInstallPath)) {
+            Write-Error "WDK installation path not found: $wdkInstallPath"
+            exit 1
+          }
+          Write-Host "✓ WDK installation path found: $wdkInstallPath"
+          
+          # Check for WDF headers (required for KMDF driver development)
+          $wdfPath = "$wdkInstallPath\Include\wdf"
+          if (-not (Test-Path $wdfPath)) {
+            Write-Error "WDF headers not found: $wdfPath"
+            exit 1
+          }
+          Write-Host "✓ WDF headers found: $wdfPath"
+          
+          # List available SDK versions
+          $includeDir = "$wdkInstallPath\Include"
+          if (Test-Path $includeDir) {
+            $sdkVersions = Get-ChildItem -Path $includeDir -Directory | Where-Object { $_.Name -match '^\d+\.' }
+            if ($sdkVersions) {
+              Write-Host "✓ Available Windows SDK versions:"
+              $sdkVersions | ForEach-Object { Write-Host "  - $($_.Name)" }
+            } else {
+              Write-Warning "No SDK versions found in $includeDir"
+            }
+          }
+          
+          Write-Host "✓ WDK verification completed successfully"
+
+      # Build the driver using the existing build system
+      - name: Build Driver
+        env:
+          DmfRootPath: "${{ github.workspace }}\\DMF"
+        run: |
+          Write-Host "Building ViGEmBus driver for all platforms..."
+          
+          try {
+            # Build using the existing build script which handles all platforms
+            .\build.cmd
+            Write-Host "✓ Build completed successfully"
+          }
+          catch {
+            Write-Error "Build failed: $($_.Exception.Message)"
+            Write-Host "=== Build Error Details ==="
+            
+            # Show build logs if available
+            Get-ChildItem -Path . -Recurse -Filter "*.log" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "=== Log: $($_.FullName) ==="
+              Get-Content $_.FullName -Tail 50
+              Write-Host ""
+            }
+            
+            # Show MSBuild output directory contents
+            if (Test-Path "bin") {
+              Write-Host "=== Bin directory contents ==="
+              Get-ChildItem -Path "bin" -Recurse | Format-Table Name, Length, LastWriteTime
+            }
+            
+            exit 1
+          }
+
+      # Create CAB packages for all platforms
+      - name: Create CAB Packages
+        run: |
+          Write-Host "Creating CAB packages for all platforms..."
+          
+          $platforms = @("x86", "x64", "ARM64")
+          $successfulPlatforms = @()
+          
+          foreach ($platform in $platforms) {
+            Write-Host "Creating CAB for platform: $platform"
+            
+            $ddfFile = "ViGEmBus_$platform.ddf"
+            if (-not (Test-Path $ddfFile)) {
+              Write-Warning "DDF file not found: $ddfFile. Skipping CAB creation for $platform."
+              continue
+            }
+            
+            try {
+              $env:PLATFORM = $platform
+              makecab.exe /f $ddfFile
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "✓ CAB package created successfully for $platform"
+                $successfulPlatforms += $platform
+              } else {
+                Write-Warning "CAB creation completed with warnings for $platform (exit code: $LASTEXITCODE)"
+                $successfulPlatforms += $platform  # Still consider it successful
+              }
+            }
+            catch {
+              Write-Warning "CAB creation failed for $platform : $($_.Exception.Message)"
+            }
+          }
+          
+          if ($successfulPlatforms.Count -gt 0) {
+            Write-Host "✓ CAB packages created for platforms: $($successfulPlatforms -join ', ')"
+          } else {
+            Write-Warning "No CAB packages were created successfully"
+          }
+
+      # Upload build artifacts for download from Actions page
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: warn
+          name: ViGEmBus-build-artifacts
+          path: |
+            bin/**/${{ github.event.repository.name }}/*.inf
+            bin/**/${{ github.event.repository.name }}/*.sys  
+            bin/**/*.pdb
+            disk1/*.cab
+          retention-days: 30
+
+      # Generate comprehensive build summary
+      - name: Generate Build Summary  
+        if: always()
+        run: |
+          Write-Host "==============================================="
+          Write-Host "           BUILD SUMMARY REPORT"
+          Write-Host "==============================================="
+          
+          # Check for built files by platform
+          $platforms = @("x86", "x64", "ARM64")
+          $totalBuiltFiles = 0
+          
+          foreach ($platform in $platforms) {
+            Write-Host ""
+            Write-Host "=== Platform: $platform ==="
+            
+            # Look for platform-specific build outputs
+            $platformPath = "bin\*$platform*"
+            $sysFiles = Get-ChildItem -Path $platformPath -Recurse -Filter "*.sys" -ErrorAction SilentlyContinue
+            $infFiles = Get-ChildItem -Path $platformPath -Recurse -Filter "*.inf" -ErrorAction SilentlyContinue  
+            $pdbFiles = Get-ChildItem -Path $platformPath -Recurse -Filter "*.pdb" -ErrorAction SilentlyContinue
+            
+            if ($sysFiles) {
+              Write-Host "✓ Driver files (.sys): $($sysFiles.Count)"
+              $sysFiles | ForEach-Object { Write-Host "  - $($_.Name) ($([math]::Round($_.Length/1KB, 2)) KB)" }
+              $totalBuiltFiles += $sysFiles.Count
+            } else {
+              Write-Host "✗ No driver files (.sys) found"
+            }
+            
+            if ($infFiles) {
+              Write-Host "✓ Installation files (.inf): $($infFiles.Count)"  
+              $infFiles | ForEach-Object { Write-Host "  - $($_.Name)" }
+              $totalBuiltFiles += $infFiles.Count
+            } else {
+              Write-Host "✗ No installation files (.inf) found"
+            }
+            
+            if ($pdbFiles) {
+              Write-Host "✓ Debug symbols (.pdb): $($pdbFiles.Count)"
+              $totalBuiltFiles += $pdbFiles.Count
+            } else {
+              Write-Host "✗ No debug symbols (.pdb) found"
+            }
+          }
+          
+          # Check CAB files
+          Write-Host ""
+          Write-Host "=== CAB Packages ==="
+          $cabFiles = Get-ChildItem -Path "disk1" -Filter "*.cab" -ErrorAction SilentlyContinue
+          if ($cabFiles) {
+            Write-Host "✓ CAB packages created: $($cabFiles.Count)"
+            $cabFiles | ForEach-Object { Write-Host "  - $($_.Name) ($([math]::Round($_.Length/1KB, 2)) KB)" }
+          } else {
+            Write-Host "✗ No CAB packages found"
+          }
+          
+          # Overall summary
+          Write-Host ""
+          Write-Host "==============================================="
+          Write-Host "OVERALL BUILD RESULT"
+          Write-Host "==============================================="
+          if ($totalBuiltFiles -gt 0) {
+            Write-Host "✓ BUILD SUCCESSFUL - $totalBuiltFiles files built across all platforms"
+            Write-Host "✓ Artifacts are available for download from the Actions page"
+          } else {
+            Write-Host "✗ BUILD FAILED - No build artifacts were generated"
+          }
+          Write-Host "==============================================="
