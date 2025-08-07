@@ -1,6 +1,5 @@
 #!/bin/bash
 # CodeQL prebuild script for Windows C++ analysis
-# This script prepares the build environment for CodeQL analysis
 
 echo "CodeQL prebuild script for Windows C++ analysis"
 
@@ -12,22 +11,13 @@ if [[ "$RUNNER_OS" == "Windows" ]]; then
     if [ -d "DMF" ] && [ -d "patches" ]; then
         cd DMF
         
-        # Check if patches are already applied by looking for a marker
-        if [ ! -f ".patches_applied" ]; then
-            # Apply patches
-            for patch in ../patches/*.diff; do
-                if [ -f "$patch" ]; then
-                    echo "Applying patch: $patch"
-                    git apply --ignore-whitespace "$patch" || echo "Warning: Failed to apply $patch"
-                fi
-            done
-            
-            # Create marker file
-            touch .patches_applied
-            echo "DMF patches applied successfully"
-        else
-            echo "DMF patches already applied"
-        fi
+        # Apply patches
+        for patch in ../patches/*.diff; do
+            if [ -f "$patch" ]; then
+                echo "Applying patch: $patch"
+                git apply --ignore-whitespace "$patch" || echo "Warning: Failed to apply $patch"
+            fi
+        done
         
         cd ..
     else
