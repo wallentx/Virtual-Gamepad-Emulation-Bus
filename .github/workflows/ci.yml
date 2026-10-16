@@ -1,0 +1,70 @@
+---
+name: CI - Build Windows Driver
+permissions:
+  contents: read
+
+on:
+  push:
+    branches-ignore:
+      - 'dependabot/**'
+  pull_request:
+    branches-ignore:
+      - 'dependabot/**'
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Driver
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone DMF
+        run: |
+          cd ..
+          git clone https://github.com/microsoft/DMF.git
+
+      - name: Apply DMF patches
+        working-directory: ../DMF
+        run: |
+          git apply --ignore-whitespace "${{ github.workspace }}/patches/dmf.diff"
+
+      - name: Install Windows Driver Kit
+        run: |
+          $url = "https://download.microsoft.com/download/c/f/8/cf80b955-d578-4635-825c-2801911f9d79/wdk/wdksetup.exe"
+          $wdkPath = "$env:TEMP\wdksetup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $wdkPath -UseBasicParsing
+          Start-Process -FilePath $wdkPath -ArgumentList "/quiet", "/norestart" -Wait
+
+      - name: Build Driver
+        env:
+          DmfRootPath: "${{ github.workspace }}\\..\\"
+        run: .\build.cmd
+
+      - name: Create CAB Packages
+        run: |
+          $platforms = @("x86", "x64", "ARM64")
+          foreach ($platform in $platforms) {
+            $ddfFile = "ViGEmBus_$platform.ddf"
+            if (Test-Path $ddfFile) {
+              $env:PLATFORM = $platform
+              makecab.exe /f $ddfFile
+            }
+          }
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ViGEmBus-build-artifacts
+          path: |
+            bin/**/*.inf
+            bin/**/*.sys  
+            bin/**/*.pdb
+            disk1/*.cab
+          retention-days: 30
