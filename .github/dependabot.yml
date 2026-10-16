@@ -10,21 +10,21 @@ updates:
     schedule:
       interval: "daily"
       time: "07:30"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0 
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "daily"
       time: "08:00"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0 
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "daily"
       time: "08:30"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0 
     groups:
       docker-actions:
         applies-to: version-updates
@@ -45,7 +45,7 @@ updates:
     schedule:
       interval: "daily"
       time: "09:00"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0 
     groups:
       dev-dependencies:
         applies-to: version-updates
@@ -56,14 +56,14 @@ updates:
     schedule:
       interval: "daily"
       time: "09:30"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0 
 
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "daily"
       time: "10:00"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0 
     groups:
       pytest-dependencies:
         applies-to: version-updates
@@ -75,4 +75,4 @@ updates:
     schedule:
       interval: "daily"
       time: "10:30"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0 
